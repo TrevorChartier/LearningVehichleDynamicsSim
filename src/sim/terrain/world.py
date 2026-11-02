@@ -25,24 +25,21 @@ class FlatWorld(BaseWorld):
         return 0.0, 0.0
 
 
-class MathExpressionWorld(BaseWorld):
-    """Analytical heightmap defined by a math expression z = f(x, y)."""
-    
-    def __init__(self, expression: str = "0.3 * sin(0.5 * x) + 0.3 * cos(0.5 * y)"):
-        self.expression = expression
+class ParameterizedSineWorld(BaseWorld):
+    """Terrain that undulates, configurable by amplitude and frequency."""
+    def __init__(self, amplitude: float = 0.5, freq_x: float = 0.2, freq_y: float = 0.2):
+        self.amp = amplitude
+        self.fx = freq_x
+        self.fy = freq_y
 
     def get_height(self, x: float, y: float) -> float:
-        sin, cos, exp, sqrt = np.sin, np.cos, np.exp, np.sqrt
-        return float(eval(self.expression, {"x": x, "y": y, "sin": sin, "cos": cos, "exp": exp, "sqrt": sqrt}))
+        return self.amp * np.sin(self.fx * x) * np.cos(self.fy * y)
 
     def get_pitch_roll(self, x: float, y: float, eps: float = 1e-3) -> tuple[float, float]:
         z_center = self.get_height(x, y)
         dz_dx = (self.get_height(x + eps, y) - z_center) / eps
         dz_dy = (self.get_height(x, y + eps) - z_center) / eps
-        
-        pitch = float(-np.arctan(dz_dx))
-        roll = float(np.arctan(dz_dy))
-        return pitch, roll
+        return float(-np.arctan(dz_dx)), float(np.arctan(dz_dy))
 
 
 class RandomCirclesWorld(BaseWorld):

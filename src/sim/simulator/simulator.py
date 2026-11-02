@@ -1,6 +1,6 @@
 import numpy as np
-from src.sim.backend_dynamics.base_backend_dynamics import BaseBackendDynamics
-from src.sim.terrain.world import BaseWorld
+from sim.backend_dynamics.base_backend_dynamics import BaseBackendDynamics
+from sim.terrain.world import BaseWorld
 
 class Simulator:
     def __init__(self, backend: BaseBackendDynamics, world: BaseWorld, dt: float = 0.05):
