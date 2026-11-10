@@ -1,4 +1,10 @@
+# Custom Additions
 data/
+venv/*
+artifacts/*
+!artifacts/.gitkeep
+.vscode/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
