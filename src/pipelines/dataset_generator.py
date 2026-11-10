@@ -96,7 +96,7 @@ class DatasetGenerator:
 if __name__ == "__main__":
     DT = 0.05
     STEPS_PER_ROLLOUT = 1500
-    DATA_DIR_NAME = "data/poc_dataset"
+    DATA_DIR_NAME = "data/raw/testing_new_dataset_pipeline"
     ROLLOUTS_PER_CONFIG = 20
     
     # 1. Define Vehicles mapping
