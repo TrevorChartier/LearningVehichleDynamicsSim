@@ -1,29 +1,83 @@
-"""TODO Still: Factor out configurations into a config file (root/configs).
-Have a script entry point under root/scripts/ parse config and run this pipeline.
-Print out some progress as it's running.
-Automatically detect when names are the same and print an error to force new names. This should also make a new directory for it.
-    As in don't let datasets get overwritten.
+"""
 Sampled parameters should get rounded to lower precision rather than long decimals.
 """
 import json
 from datetime import datetime, timezone
 import os
 from pathlib import Path
-from tqdm import tqdm
 import numpy as np
+from tqdm import tqdm
 
 from policies.smooth_noise_policy import SmoothNoisePolicy
 from sim.backend_dynamics.kbm import KBM
 from sim.simulator.simulator import Simulator
-from sim.terrain.world import BaseWorld
+from sim.terrain.world import BaseWorld, ParameterizedSineWorld
 from sim.vehicles.vehicle import BaseVehicle, KBMVehicle
-from sim.terrain.world import ParameterizedSineWorld 
 
 class DatasetGenerator:
-    def __init__(self, output_dir: str, dt: float = 0.05):
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.dt = dt
+    def __init__(self, config: dict):
+        self.config = config
+        self.gen_params = config["generation_params"]
+        self.metadata = config["metadata"]
+        
+        self.dt = self.gen_params["dt"]
+        
+        # Format the directory name (e.g. "poc_dataset_v1_1")
+        safe_name = self.metadata["dataset_name"].replace(" ", "_").lower()
+        safe_version = self.metadata["version"].replace(".", "_")
+        folder_name = f"{safe_name}_v{safe_version}"
+        
+        self.output_dir = Path(self.gen_params["data_dir_name"]) / folder_name
+        
+        # Enforce overwrite protection
+        if self.output_dir.exists():
+            raise FileExistsError(
+                f"Dataset directory already exists at: {self.output_dir}\n"
+                f"Please update the 'version' or 'dataset_name' in your config file to prevent overwriting."
+            )
+            
+        self.output_dir.mkdir(parents=True, exist_ok=False)
+
+    def _sample_distributions(self):
+        """Orchestrates the sampling of concrete simulator objects from the config distributions."""
+        sampled_vehicles = {}
+        v_id_counter = 0
+        for dist_id, params in self.config["vehicle_dists"].items():
+            for _ in range(params["num_samples"]):
+                wb = np.round(np.random.uniform(*params["wheelbase_range"]), 3)
+                drag = np.round(np.random.uniform(*params["drag_range"]), 3)
+                sampled_vehicles[v_id_counter] = {
+                    "dist_id": int(dist_id),
+                    "instance": KBMVehicle(wheelbase=wb, drag_coeff=drag)
+                }
+                v_id_counter += 1
+
+        sampled_worlds = {}
+        w_id_counter = 0
+        for dist_id, params in self.config["world_dists"].items():
+            for _ in range(params["num_samples"]):
+                amp = np.round(np.random.uniform(*params["amp_range"]), 3)
+                fx = np.round(np.random.uniform(*params["fx_range"]), 3)
+                fy = np.round(np.random.uniform(*params["fy_range"]), 3)
+                sampled_worlds[w_id_counter] = {
+                    "dist_id": int(dist_id),
+                    "instance": ParameterizedSineWorld(amplitude=amp, freq_x=fx, freq_y=fy)
+                }
+                w_id_counter += 1
+                
+        combinations = []
+        for v_id, v_info in sampled_vehicles.items():
+            for w_id, w_info in sampled_worlds.items():
+                combinations.append({
+                    "vehicle_dist_id": v_info["dist_id"],
+                    "vehicle_id": v_id,
+                    "vehicle": v_info["instance"],
+                    "world_dist_id": w_info["dist_id"],
+                    "world_id": w_id,
+                    "world": w_info["instance"]
+                })
+                
+        return combinations, sampled_vehicles, sampled_worlds
 
     def collect_rollout(self, vehicle: BaseVehicle, world: BaseWorld, steps: int) -> dict:
         backend = KBM(vehicle=vehicle)
@@ -66,7 +120,14 @@ class DatasetGenerator:
             "ground_truth_wheelbase": np.full(steps, vehicle.wheelbase)
         }
         
-    def generate_dataset(self, configurations: list, rollouts_per_config: int, steps_per_rollout: int):
+    def run_pipeline(self):
+        """Main execution method that triggers sampling, collection, and saving."""
+        print("Sampling distributions...")
+        combinations, sampled_vehicles, sampled_worlds = self._sample_distributions()
+        
+        steps_per_rollout = self.gen_params["steps_per_rollout"]
+        rollouts_per_config = self.gen_params["rollouts_per_config"]
+        
         keys = ["timestep", "rollout_id", "vehicle_dist_id", "vehicle_id", 
                 "world_dist_id", "world_id", "x", "y", "yaw", "v", 
                 "accel", "steering", "delta_v", "delta_yaw", "ground_truth_pitch", 
@@ -74,159 +135,103 @@ class DatasetGenerator:
         all_data = {k: [] for k in keys}
         
         current_rollout_id = 0
-        total_expected_rollouts = len(configurations) * rollouts_per_config
+        total_expected_rollouts = len(combinations) * rollouts_per_config
         
-        # Wrap the generation process in a tqdm progress bar
         with tqdm(total=total_expected_rollouts, desc="Generating Rollouts", unit="rollout") as pbar:
-            for config in configurations:
-                vehicle = config["vehicle"]
-                world = config["world"]
+            for config_combo in combinations:
+                vehicle = config_combo["vehicle"]
+                world = config_combo["world"]
                 
                 for _ in range(rollouts_per_config):
-                    # 1. Get pure physics data
                     rollout_data = self.collect_rollout(vehicle=vehicle, world=world, steps=steps_per_rollout)
                     
-                    # 2. Stamp metadata at the dataset level
                     rollout_data["timestep"] = np.arange(steps_per_rollout)
                     rollout_data["rollout_id"] = np.full(steps_per_rollout, current_rollout_id)
                     
-                    rollout_data["vehicle_dist_id"] = np.full(steps_per_rollout, config["vehicle_dist_id"])
-                    rollout_data["vehicle_id"] = np.full(steps_per_rollout, config["vehicle_id"])
+                    rollout_data["vehicle_dist_id"] = np.full(steps_per_rollout, config_combo["vehicle_dist_id"])
+                    rollout_data["vehicle_id"] = np.full(steps_per_rollout, config_combo["vehicle_id"])
                     
-                    rollout_data["world_dist_id"] = np.full(steps_per_rollout, config["world_dist_id"])
-                    rollout_data["world_id"] = np.full(steps_per_rollout, config["world_id"])
+                    rollout_data["world_dist_id"] = np.full(steps_per_rollout, config_combo["world_dist_id"])
+                    rollout_data["world_id"] = np.full(steps_per_rollout, config_combo["world_id"])
                     
-                    # 3. Append to master lists
                     for k in keys:
                         all_data[k].append(rollout_data[k])
                         
                     current_rollout_id += 1
-                    pbar.update(1)  # Advance the progress bar by 1 rollout
+                    pbar.update(1)
                     
         print("\nConcatenating and saving dataset... ", end="", flush=True)
         for k in keys:
             all_data[k] = np.concatenate(all_data[k])
             
-        np.savez_compressed(self.output_dir / "monolithic_dataset.npz", **all_data)
-        print(f"Done! Saved to {self.output_dir / 'monolithic_dataset.npz'}")
+        np.savez_compressed(self.output_dir / "dataset.npz", **all_data)
+        print(f"Done! Saved to {self.output_dir / 'dataset.npz'}")
         
-        return len(all_data['v']), current_rollout_id, keys
+        total_samples = len(all_data['v'])
+        
+        self._save_dataset_card(
+            sampled_vehicles=sampled_vehicles, 
+            sampled_worlds=sampled_worlds, 
+            total_samples=total_samples, 
+            total_rollouts=current_rollout_id, 
+            feature_keys=keys
+        )
+        print("Dataset card saved successfully.")
 
-if __name__ == "__main__":
-    DT = 0.05
-    STEPS_PER_ROLLOUT = 1500
-    DATA_DIR_NAME = "data/raw/testing_new_dataset_pipeline"
-    ROLLOUTS_PER_CONFIG = 20
-
-    vehicle_dists = {
-        0: {"wheelbase_range": [0.30, 0.35], "drag_range": [0.08, 0.12], "num_samples": 2},
-        1: {"wheelbase_range": [0.40, 0.50], "drag_range": [0.25, 0.35], "num_samples": 3},
-    }
-    world_dists = {
-        0: {"amp_range": [0.1, 0.3], "fx_range": [0.4, 0.6], "fy_range": [0.4, 0.6], "num_samples": 2},
-        1: {"amp_range": [0.4, 0.6], "fx_range": [0.1, 0.3], "fy_range": [0.1, 0.3], "num_samples": 2},
-    }
-
-    sampled_vehicles = {}
-    v_id_counter = 0
-    for dist_id, params in vehicle_dists.items():
-        for _ in range(params["num_samples"]):
-            wb = np.random.uniform(*params["wheelbase_range"])
-            drag = np.random.uniform(*params["drag_range"])
-            sampled_vehicles[v_id_counter] = {
-                "dist_id": dist_id,
-                "instance": KBMVehicle(wheelbase=wb, drag_coeff=drag)
-            }
-            v_id_counter += 1
-
-    sampled_worlds = {}
-    w_id_counter = 0
-    for dist_id, params in world_dists.items():
-        for _ in range(params["num_samples"]):
-            amp = np.random.uniform(*params["amp_range"])
-            fx = np.random.uniform(*params["fx_range"])
-            fy = np.random.uniform(*params["fy_range"])
-            sampled_worlds[w_id_counter] = {
-                "dist_id": dist_id,
-                "instance": ParameterizedSineWorld(amplitude=amp, freq_x=fx, freq_y=fy)
-            }
-            w_id_counter += 1
-    
-    # 5. Create combinations to run
-    combinations = []
-    for v_id, v_info in sampled_vehicles.items():
-        for w_id, w_info in sampled_worlds.items():
-            combinations.append({
-                "vehicle_dist_id": v_info["dist_id"],
-                "vehicle_id": v_id,
-                "vehicle": v_info["instance"],
-                "world_dist_id": w_info["dist_id"],
-                "world_id": w_id,
-                "world": w_info["instance"]
-            })
-            
-    generator = DatasetGenerator(DATA_DIR_NAME, dt=DT)
-    total_samples, total_rollouts, feature_keys = generator.generate_dataset(
-        configurations=combinations, 
-        rollouts_per_config=ROLLOUTS_PER_CONFIG, 
-        steps_per_rollout=STEPS_PER_ROLLOUT
-    )
-    
-    # 6. Generate Dataset Card with explicit mappings for distributions AND specific instances
-    card = {
-        "metadata": {
-            "dataset_name": "PoC Dataset 2",
-            "description": "Small PoC Dataset Over Sampled Distributions of Terrains and Vehicles",
-            "author": "Trevor Chartier",
-            "creation_timestamp": datetime.now().astimezone().strftime("%m_%d_%Y__%I_%M_%p_%Z"),
-            "version": "1.1"
-        },
-        "simulation_params": {
-            "backend_dynamics": "KBM",
-            "dt_seconds": DT,
-            "steps_per_rollout": STEPS_PER_ROLLOUT,
-            "rollout_duration_seconds": STEPS_PER_ROLLOUT * DT,
-            "total_rollouts": int(total_rollouts),
-            "total_samples": int(total_samples)
-        },
-        "collection_policy": {
-            "type": "SmoothNoisePolicy",
-            "description": "Temporally correlated noise using sum of sine waves to prevent instantaneous gradient averaging and excite lateral dynamics.",
-            "params": {
-                "max_accel": 3.0,
-                "max_steer": 0.5,
-                "dt": DT
-            }
-        },
-        "mappings": {
-            "vehicle_distributions": vehicle_dists,
-            "world_distributions": world_dists,
-            "sampled_vehicles_exact": {
-                v_id: {
-                    "from_dist_id": v_info["dist_id"],
-                    "wheelbase": v_info["instance"].wheelbase, 
-                    "drag_coeff": v_info["instance"].drag_coeff
-                } for v_id, v_info in sampled_vehicles.items()
+    def _save_dataset_card(self, sampled_vehicles: dict, sampled_worlds: dict, 
+                           total_samples: int, total_rollouts: int, feature_keys: list):
+        """Internal method to generate and save the dataset provenance."""
+        card = {
+            "metadata": self.config["metadata"],
+            "simulation_params": {
+                "backend_dynamics": "KBM",
+                "dt_seconds": self.dt,
+                "steps_per_rollout": self.gen_params["steps_per_rollout"],
+                "rollout_duration_seconds": self.gen_params["steps_per_rollout"] * self.dt,
+                "total_rollouts": int(total_rollouts),
+                "total_samples": int(total_samples)
             },
-            "sampled_worlds_exact": {
-                w_id: {
-                    "from_dist_id": w_info["dist_id"],
-                    "type": "ParameterizedSineWorld", 
-                    "amplitude": w_info["instance"].amp, 
-                    "freq_x": w_info["instance"].fx, 
-                    "freq_y": w_info["instance"].fy
-                } for w_id, w_info in sampled_worlds.items()
+            "collection_policy": {
+                "type": "SmoothNoisePolicy",
+                "description": "Temporally correlated noise using sum of sine waves to prevent instantaneous gradient averaging and excite lateral dynamics.",
+                "params": {
+                    "max_accel": 3.0,
+                    "max_steer": 0.5,
+                    "dt": self.dt
+                }
+            },
+            "mappings": {
+                "vehicle_distributions": self.config["vehicle_dists"],
+                "world_distributions": self.config["world_dists"],
+                "sampled_vehicles_exact": {
+                    v_id: {
+                        "from_dist_id": v_info["dist_id"],
+                        "wheelbase": v_info["instance"].wheelbase, 
+                        "drag_coeff": v_info["instance"].drag_coeff
+                    } for v_id, v_info in sampled_vehicles.items()
+                },
+                "sampled_worlds_exact": {
+                    w_id: {
+                        "from_dist_id": w_info["dist_id"],
+                        "type": "ParameterizedSineWorld", 
+                        "amplitude": w_info["instance"].amp, 
+                        "freq_x": w_info["instance"].fx, 
+                        "freq_y": w_info["instance"].fy
+                    } for w_id, w_info in sampled_worlds.items()
+                }
+            },
+            "schema": {
+                "metadata_columns": ["timestep", "rollout_id", "vehicle_dist_id", "vehicle_id", "world_dist_id", "world_id"],
+                "global_states": ["x", "y", "yaw"],
+                "observables": ["v", "accel", "steering"],
+                "targets": ["delta_v", "delta_yaw"],
+                "ground_truths": ["ground_truth_pitch", "ground_truth_drag", "ground_truth_wheelbase"],
+                "raw_features_list": feature_keys
             }
-        },
-        "schema": {
-            "metadata_columns": ["timestep", "rollout_id", "vehicle_dist_id", "vehicle_id", "world_dist_id", "world_id"],
-            "global_states": ["x", "y", "yaw"],
-            "observables": ["v", "accel", "steering"],
-            "targets": ["delta_v", "delta_yaw"],
-            "ground_truths": ["ground_truth_pitch", "ground_truth_drag", "ground_truth_wheelbase"],
-            "raw_features_list": feature_keys
         }
-    }
-    
-    with open(os.path.join(DATA_DIR_NAME, "dataset_card.json"), "w") as f:
-        json.dump(card, f, indent=4)
+        
+        # Add creation timestamp directly to metadata block dynamically
+        card["metadata"]["creation_timestamp"] = datetime.now().astimezone().strftime("%m_%d_%Y__%I_%M_%p_%Z")
+        
+        with open(self.output_dir / "dataset_card.json", "w") as f:
+            json.dump(card, f, indent=4)

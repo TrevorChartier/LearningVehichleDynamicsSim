@@ -5,6 +5,8 @@ artifacts/*
 !artifacts/.gitkeep
 .vscode/
 
+notebooks/play/*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

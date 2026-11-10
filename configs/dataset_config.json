@@ -1,0 +1,22 @@
+{
+    "metadata": {
+        "dataset_name": "testing_config_extracted_pipeline",
+        "description": "V1.2 Introduces Rounding of Params Over V1.1",
+        "author": "Trevor Chartier",
+        "version": "1.2"
+    },
+    "generation_params": {
+        "dt": 0.05,
+        "steps_per_rollout": 1000,
+        "data_dir_name": "data/raw/",
+        "rollouts_per_config": 20
+    },
+    "vehicle_dists": {
+        "0": {"wheelbase_range": [0.30, 0.35], "drag_range": [0.08, 0.12], "num_samples": 2},
+        "1": {"wheelbase_range": [0.40, 0.50], "drag_range": [0.25, 0.35], "num_samples": 3}
+    },
+    "world_dists": {
+        "0": {"amp_range": [0.1, 0.3], "fx_range": [0.4, 0.6], "fy_range": [0.4, 0.6], "num_samples": 2},
+        "1": {"amp_range": [0.4, 0.6], "fx_range": [0.1, 0.3], "fy_range": [0.1, 0.3], "num_samples": 2}
+    }
+}
