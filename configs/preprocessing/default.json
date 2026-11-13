@@ -1,0 +1,16 @@
+{
+    "dataset_name": "PoC Dataset",
+    "version": "1.1",
+    "description": "To test the preprocessing pipeline",
+    "raw_data_dir": "data/raw/testing_config_extracted_pipeline_v1_2",
+    "processed_data_dir": "data/processed",
+    "seed": 42,
+    "holdout_fractions": {
+        "vehicle_dists": 0.3,
+        "world_dists": 0.3,
+        "vehicles": 0.3,
+        "worlds": 0.3,
+        "in_domain_val": 0.15,
+        "in_domain_test": 0.15
+    }
+}
