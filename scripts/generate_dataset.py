@@ -3,11 +3,7 @@ import json
 import sys
 from pathlib import Path
 
-# Dynamically add the root project directory to the Python path
-project_root = Path(__file__).resolve().parent.parent
-sys.path.append(str(project_root))
-
-from src.pipelines.dataset_generator import DatasetGenerator
+from pipelines.dataset_generator import DatasetGenerator
 
 def main():
     parser = argparse.ArgumentParser(
